@@ -150,13 +150,28 @@ class SVD(AlgoBase):
         AlgoBase.__init__(self)
 
     def fit(self, trainset):
-        print("HI")
-        AlgoBase.fit(self, trainset)
-        self.sgd(trainset)
+
+        self._fit_init(trainset)
+        for epoch in range(self.n_epochs):
+            self._step()
 
         return self
 
-    def sgd(self, trainset):
+    def _fit_init(self, trainset):
+        AlgoBase.fit(self, trainset)
+
+        rng = get_rng(self.random_state)
+
+        self.bu = np.zeros(trainset.n_users, np.double)
+        self.bi = np.zeros(trainset.n_items, np.double)
+        self.pu = rng.normal(self.init_mean, self.init_std_dev,
+                             (trainset.n_users, self.n_factors))
+        self.qi = rng.normal(self.init_mean, self.init_std_dev,
+                             (trainset.n_items, self.n_factors))
+        self.global_mean = self.trainset.global_mean if self.biased else 0
+        self.trainset = trainset
+
+    def _step(self):
 
         # OK, let's breath. I've seen so many different implementation of this
         # algorithm that I just not sure anymore of what it should do. I've
@@ -190,18 +205,20 @@ class SVD(AlgoBase):
         # anymore, we need to compute the dot products by hand, and update
         # user and items factors by iterating over all factors...
 
+        # Recover variables
         # user biases
-        cdef np.ndarray[np.double_t] bu
+        cdef np.ndarray[np.double_t] bu = self.bu
         # item biases
-        cdef np.ndarray[np.double_t] bi
+        cdef np.ndarray[np.double_t] bi = self.bi
         # user factors
-        cdef np.ndarray[np.double_t, ndim=2] pu
+        cdef np.ndarray[np.double_t, ndim=2] pu = self.pu
         # item factors
-        cdef np.ndarray[np.double_t, ndim=2] qi
+        cdef np.ndarray[np.double_t, ndim=2] qi = self.qi
+        trainset = self.trainset
 
         cdef int u, i, f
         cdef double r, err, dot, puf, qif
-        cdef double global_mean = self.trainset.global_mean
+        cdef double global_mean = self.global_mean
 
         cdef double lr_bu = self.lr_bu
         cdef double lr_bi = self.lr_bi
@@ -213,45 +230,28 @@ class SVD(AlgoBase):
         cdef double reg_pu = self.reg_pu
         cdef double reg_qi = self.reg_qi
 
-        rng = get_rng(self.random_state)
+        for u, i, r in trainset.all_ratings():
 
-        bu = np.zeros(trainset.n_users, np.double)
-        bi = np.zeros(trainset.n_items, np.double)
-        pu = rng.normal(self.init_mean, self.init_std_dev,
-                        (trainset.n_users, self.n_factors))
-        qi = rng.normal(self.init_mean, self.init_std_dev,
-                        (trainset.n_items, self.n_factors))
+            # compute current error
+            dot = 0  # <q_i, p_u>
+            for f in range(self.n_factors):
+                dot += qi[i, f] * pu[u, f]
+            err = r - (global_mean + bu[u] + bi[i] + dot)
 
-        if not self.biased:
-            global_mean = 0
+            # update biases
+            if self.biased:
+                bu[u] += lr_bu * (err - reg_bu * bu[u])
+                bi[i] += lr_bi * (err - reg_bi * bi[i])
 
-        for current_epoch in range(self.n_epochs):
-            if self.verbose:
-                print("Processing epoch {}".format(current_epoch))
-            for u, i, r in trainset.all_ratings():
+            # update factors
+            for f in range(self.n_factors):
+                puf = pu[u, f]
+                qif = qi[i, f]
+                pu[u, f] += lr_pu * (err * qif - reg_pu * puf)
+                qi[i, f] += lr_qi * (err * puf - reg_qi * qif)
 
-                # compute current error
-                dot = 0  # <q_i, p_u>
-                for f in range(self.n_factors):
-                    dot += qi[i, f] * pu[u, f]
-                err = r - (global_mean + bu[u] + bi[i] + dot)
-
-                # update biases
-                if self.biased:
-                    bu[u] += lr_bu * (err - reg_bu * bu[u])
-                    bi[i] += lr_bi * (err - reg_bi * bi[i])
-
-                # update factors
-                for f in range(self.n_factors):
-                    puf = pu[u, f]
-                    qif = qi[i, f]
-                    pu[u, f] += lr_pu * (err * qif - reg_pu * puf)
-                    qi[i, f] += lr_qi * (err * puf - reg_qi * qif)
-
-        self.bu = bu
-        self.bi = bi
-        self.pu = pu
-        self.qi = qi
+        # Cache variables
+        self.bu, self.bi, self.pu, self.qi = bu, bi, pu, qi
 
     def estimate(self, u, i):
         # Should we cythonize this as well?
