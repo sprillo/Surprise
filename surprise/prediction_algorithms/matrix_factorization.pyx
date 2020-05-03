@@ -150,7 +150,7 @@ class SVD(AlgoBase):
         AlgoBase.__init__(self)
 
     def fit(self, trainset):
-
+        print("HI")
         AlgoBase.fit(self, trainset)
         self.sgd(trainset)
 
